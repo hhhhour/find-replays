@@ -3,9 +3,9 @@ import { JSDOM } from 'jsdom'
 import { Readable } from 'stream'
 import { finished } from 'stream/promises'
 import slugify from 'slugify'
+import 'dotenv/config'
 
-const config = JSON.parse(fs.readFileSync('./config.json', 'utf-8'))
-const baseUrl = `https://replays.wesnoth.org/${config.VERSION}`
+const baseUrl = `https://replays.wesnoth.org/${process.env.VERSION}`
 
 let searchTerms = {
   save: [],
@@ -88,7 +88,7 @@ const download = async (url, path) => {
 }
 
 const dirUrls = []
-let currentDate = new Date(config.START_DATE)
+let currentDate = new Date(process.env.START_DATE)
 currentDate.setHours(0, 0, 0, 0)
 let endDate = new Date()
 endDate.setDate(endDate.getDate() -1)
@@ -147,5 +147,10 @@ for (const url of dirUrls) {
         fs.utimesSync(`./replays/${filename}`, lastModified, lastModified)
       }
     }
-
 }
+
+const newStartDate = currentDate.toISOString().slice(0, 10)
+const newEnv = fs.readFileSync('./.env', 'utf-8').replace(/START_DATE\=\"[0-9\-]*\"/, `START_DATE="${newStartDate}\"`)
+fs.writeFileSync('./.env', newEnv, 'utf-8')
+
+console.log(`Set next START_DATE to ${newStartDate}`)

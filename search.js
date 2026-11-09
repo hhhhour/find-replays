@@ -5,28 +5,7 @@ import { finished } from 'stream/promises'
 import slugify from 'slugify'
 import 'dotenv/config'
 
-const baseUrl = `https://replays.wesnoth.org/${process.env.VERSION}`
-
-let searchTerms = {
-  save: [],
-  title: [],
-  modifications: [],
-  era: [],
-  players: [],
-}
-
-fs.readFileSync('./search.txt', 'utf8')
-  .split("\n")
-  .filter(t => t)
-  .map(term => term.toLocaleLowerCase())
-  .reduce((terms, term) => {
-    const [type, word] = term.split(':')
-    if (typeof terms[type] === undefined) {
-      throw new Error(`Unrecognized term type: ${type}. Valid values are: save, description, title, modifications, era, players`)
-    }
-    terms[type].push(word)
-    return terms
-  }, searchTerms)
+const getBaseUrl = (version) => `https://replays.wesnoth.org/${version}`
 
 const getZeroNumber = (num) => num.toString().padStart('2', '0')
 
@@ -35,7 +14,7 @@ const hasSearchTerms = (text, terms) => {
   return terms.some(t => lowerText.includes(t))
 }
 
-const rowHasMatch = (row) => {
+const rowHasMatch = (row, searchTerms) => {
   if (searchTerms.save.length) {
     const saveText = row.querySelector('a')?.textContent ?? ''
     if (hasSearchTerms(saveText, searchTerms.save)) {
@@ -87,70 +66,129 @@ const download = async (url, path) => {
   console.log(`Saved ${url} to ${path}`)
 }
 
-const dirUrls = []
-let currentDate = new Date(process.env.START_DATE)
-currentDate.setHours(0, 0, 0, 0)
-let endDate = new Date()
-endDate.setDate(endDate.getDate() -1)
-endDate.setHours(0, 0, 0, 0)
-while (currentDate.getTime() <= endDate.getTime()) {
-  const year = currentDate.getFullYear()
-  const month = getZeroNumber(currentDate.getMonth() + 1)
-  const day = getZeroNumber(currentDate.getDate())
-  dirUrls.push(`${year}/${month}/${day}`)
-  currentDate.setDate(currentDate.getDate() + 1)
-}
+const search = async (filename) => {
+  console.log(`Reading search params from ${filename}`)
 
-for (const url of dirUrls) {
-  console.log(`Looking for replays on ${url}`)
-  const replays = await fetch(`${baseUrl}/${url}`)
-    .then(r => {
-      if (!r.ok) {
-        throw new Error(`Error loading replays at ${baseUrl}/${url}`)
+  let searchTerms = {
+    save: [],
+    title: [],
+    modifications: [],
+    era: [],
+    players: [],
+    version: '',
+  }
+
+  fs.readFileSync(filename, 'utf8')
+    .split("\n")
+    .filter(t => t)
+    .map(term => term.toLocaleLowerCase())
+    .reduce((terms, term) => {
+      const [type, word] = term.split(':')
+      if (typeof terms[type] === undefined) {
+        throw new Error(`Unrecognized term type: ${type}. Valid values are: save, description, title, modifications, era, players`)
       }
-      return r
-    })
-    .then(r => r.text())
-    .then(html => new JSDOM(html))
-    .then(dom => dom.window.document)
-    .then(doc => Array.from(doc.querySelectorAll('tr.even,tr.odd')))
-    .then(rows => rows
-      .filter(rowHasMatch)
-      .map(row => {
-        const file = row.querySelector('a')?.href
-        const descriptionText = row.querySelector('.indexcoldesc')?.textContent ?? ''
-        const date = row.querySelector('.indexcollastmod')?.textContent ?? ''
-        const titleMatches = descriptionText.match(/title:([\s\S]*?)(?:modifications:|era:|players:)/)
-        return {
-          url: `${baseUrl}/${url}/${file}`,
-          file,
-          title: titleMatches ? titleMatches[1] : '',
-          date,
+      if (type === 'version') {
+        terms[type] = word
+      } else {
+        terms[type].push(word)
+      }
+      return terms
+    }, searchTerms)
+
+  if (!searchTerms.version) {
+    console.log(`No version found in ${filename}. Exiting without searching.`)
+    return
+  }
+
+  const baseUrl = getBaseUrl(searchTerms.version)
+  const searchDir = filename
+    .replace('.txt', '')
+    .split('-')
+    .slice(1)
+    .join('-')
+  const saveReplaysDir = ['replays', searchDir]
+    .filter(d => d)
+    .join('/')
+
+  const dirUrls = []
+  let currentDate = new Date(process.env.START_DATE)
+  currentDate.setHours(0, 0, 0, 0)
+  let endDate = new Date()
+  endDate.setDate(endDate.getDate() -1)
+  endDate.setHours(0, 0, 0, 0)
+  while (currentDate.getTime() <= endDate.getTime()) {
+    const year = currentDate.getFullYear()
+    const month = getZeroNumber(currentDate.getMonth() + 1)
+    const day = getZeroNumber(currentDate.getDate())
+    dirUrls.push(`${year}/${month}/${day}`)
+    currentDate.setDate(currentDate.getDate() + 1)
+  }
+
+  for (const url of dirUrls) {
+    console.log(`Looking for replays on ${url}`)
+    const replays = await fetch(`${baseUrl}/${url}`)
+      .then(r => {
+        if (!r.ok) {
+          throw new Error(`Error loading replays at ${baseUrl}/${url}`)
         }
+        return r
       })
-    )
-    .catch((e) => console.log(e.message))
+      .then(r => r.text())
+      .then(html => new JSDOM(html))
+      .then(dom => dom.window.document)
+      .then(doc => Array.from(doc.querySelectorAll('tr.even,tr.odd')))
+      .then(rows => rows
+        .filter((row) => rowHasMatch(row, searchTerms))
+        .map(row => {
+          const file = row.querySelector('a')?.href
+          const descriptionText = row.querySelector('.indexcoldesc')?.textContent ?? ''
+          const date = row.querySelector('.indexcollastmod')?.textContent ?? ''
+          const titleMatches = descriptionText.match(/title:([\s\S]*?)(?:modifications:|era:|players:)/)
+          return {
+            url: `${baseUrl}/${url}/${file}`,
+            file,
+            title: titleMatches ? titleMatches[1] : '',
+            date,
+          }
+        })
+      )
+      .catch((e) => console.log(e.message))
 
-    if (replays?.length) {
-      for (const replay of replays) {
-        const filename = slugify(
-          [
-            replay.title,
-            replay.date,
-            replay.file,
-          ]
-          .filter(f => !!f.trim())
-          .join('-')
-        )
-        await download(replay.url, `./replays/${filename}`)
-        const lastModified = new Date(replay.date)
-        fs.utimesSync(`./replays/${filename}`, lastModified, lastModified)
+      if (replays?.length) {
+        if (!fs.existsSync(`./${saveReplaysDir}`)) {
+          fs.mkdirSync(`./${saveReplaysDir}`)
+        }
+        for (const replay of replays) {
+          const filename = slugify(
+            [
+              replay.title,
+              replay.date,
+              replay.file,
+            ]
+            .filter(f => !!f.trim())
+            .join('-')
+          )
+          const savePath = `./${saveReplaysDir}/${filename}`
+          await download(replay.url, savePath)
+          const lastModified = new Date(replay.date)
+          fs.utimesSync(savePath, lastModified, lastModified)
+        }
       }
-    }
+  }
+
+  const newStartDate = currentDate.toISOString().slice(0, 10)
+  const newEnv = fs.readFileSync('./.env', 'utf-8').replace(/START_DATE\=\"[0-9\-]*\"/, `START_DATE="${newStartDate}\"`)
+  fs.writeFileSync('./.env', newEnv, 'utf-8')
+
+  console.log(`Set next START_DATE to ${newStartDate}`)
 }
 
-const newStartDate = currentDate.toISOString().slice(0, 10)
-const newEnv = fs.readFileSync('./.env', 'utf-8').replace(/START_DATE\=\"[0-9\-]*\"/, `START_DATE="${newStartDate}\"`)
-fs.writeFileSync('./.env', newEnv, 'utf-8')
+const filenames = fs.readdirSync('./')
+for await (const filename of filenames) {
+  const match = filename.match(/search[\s\S]*?\.txt/)
+  if (!match || !match[0]) {
+    continue
+  }
+  await search(`./${match[0]}`)
+}
 
-console.log(`Set next START_DATE to ${newStartDate}`)
